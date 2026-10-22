@@ -13,6 +13,7 @@ Tech stack: Python, PySpark, SQL, Databricks, Delta Lake, Unity Catalog
 - [x] Key registry for tables and their primary key columns
 - [x] Custom Python runner that validates every registered table
 - [x] Error handling: invalid registry entries are reported without stopping the run
+- [x] Planted defect tables confirming duplicate and null key detection
 - [x] Central results table with run history
 - [ ] Freshness checks
 - [ ] Databricks Labs DQX approach
@@ -48,19 +49,21 @@ flowchart TD
 
 ## Example output
 
-Sample results from a single validation run, including a deliberately invalid registry entry to demonstrate error handling:
+Sample results from validation runs. The `_dupes` and `_nulls` tables contain deliberately planted defects, and the ERROR row comes from the error handling test:
 
 | table_name | key_columns | test_result | row_count | null_key_count | duplicate_count |
 |---|---|---|---|---|---|
 | `validation_sweep.dev.customer` | `c_custkey` | PASS | 150,000 | 0 | 0 |
 | `validation_sweep.dev.partsupp` | `ps_partkey`, `ps_suppkey` | PASS | 800,000 | 0 | 0 |
+| `validation_sweep.dev.customer_dupes` | `c_custkey` | FAIL | 150,005 | 0 | 5 |
+| `validation_sweep.dev.partsupp_nulls` | `ps_partkey`, `ps_suppkey` | FAIL | 800,004 | 4 | 0 |
 | `validation_sweep.dev.customer` | `c_invalidkey` | ERROR | — | — | — |
 
-The invalid key column (`c_invalidkey`) was temporarily added to the registry for testing. The runner records the error in `error_message` and continues validating the remaining tables. Metrics are unavailable for checks that encounter an error.
+Clean copies pass, while the defect tables fail with the exact number of planted duplicates and null keys. The invalid key column (`c_invalidkey`) was temporarily added to the registry for testing; the runner records the error in `error_message` and continues validating the remaining tables. Metrics are unavailable for checks that encounter an error.
 
 ## Repository structure
 
-- `setup/`: notebooks that prepare test data, the key registry, and the results table
+- `setup/`: notebooks that prepare test data, the key registry, the results table, and planted defects
 - `runners/python_native/`: custom Python validation runner
 - `exploration/`: data exploration and error handling tests
 
@@ -71,4 +74,5 @@ Developed on Databricks Free Edition using the TPC-H sample data. Run the notebo
 1. `setup/01_copy_source_tables`
 2. `setup/02_create_pk_registry`
 3. `setup/03_create_results_table`
-4. `runners/python_native/validate_primary_keys`
+4. `setup/04_plant_pk_defects`
+5. `runners/python_native/validate_primary_keys`
