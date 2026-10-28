@@ -2,56 +2,69 @@
 
 Status: In Progress
 
-Metadata-driven data validation framework that automates schema-wide validation without per-table code. A configurable key registry drives primary key uniqueness and null value checks across tables, and every run's results are stored in a single queryable table, with a view exposing the latest run for each validation method and test type.
+Metadata-driven data validation framework that automates primary key and data freshness checks without per-table validation code. Configurable registries define the tables, key columns, and freshness thresholds to validate. Results from each run are stored in a central Delta table, with a view exposing the latest run for each validation method and test type.
 
-Planned extensions include data freshness checks and a dbt-based validation approach.
+Primary key validation is implemented using custom Python/PySpark and Databricks Labs DQX runners. Freshness validation uses Delta table history to identify the latest qualifying data-change operation and compare its age against a configurable threshold.
+
+A dbt-based primary key validation approach is planned.
 
 Tech stack: Python, PySpark, SQL, Databricks, Delta Lake, Unity Catalog, Databricks Labs DQX
 
 ## Progress
 
 - [x] Key registry for tables and their primary key columns
-- [x] Custom Python runner that validates every registered table
-- [x] Error handling: invalid registry entries are reported without stopping the run
+- [x] Custom Python runner for primary key validation
+- [x] Error isolation for invalid registry entries
 - [x] Planted defect tables confirming duplicate and null key detection
-- [x] Central results table with run history
-- [x] Databricks Labs DQX approach
-- [ ] Freshness checks
-- [ ] dbt approach
+- [x] Central results table with historical runs
+- [x] Databricks Labs DQX primary key validation
+- [x] Freshness registry with configurable thresholds
+- [x] Python-native freshness validation using Delta history
+- [x] Freshness PASS, FAIL, and ERROR testing
+- [ ] dbt primary key validation approach
 
 ## How it works
 
-Tables and their primary key columns are registered in a metadata table. Each validation runner reads the registry, checks every active table for duplicate and null key values, and appends the results to a central results table. A view shows the latest run for each method, so adding a table to the sweep only takes a new registry entry.
+Two metadata registries drive the validation framework. The primary key registry defines tables and their key columns, while the freshness registry defines tables and maximum allowable data age. Each runner reads its corresponding registry and appends results to a shared Delta table. A view exposes the latest run for each validation method and test type.
+
+Adding a table or changing a freshness threshold requires updating registry metadata rather than modifying validation code.
 
 ```mermaid
 flowchart TD
     A[("samples.tpch_sf1<br/>Read-only source")]
-    B[("Dev tables<br/>setup/01, setup/04")]
-    C[("pk_registry<br/>Tables and keys, setup/02")]
-    D1["validate_primary_keys<br/>Python / PySpark runner"]
-    D2["validate_primary_keys<br/>DQX runner"]
-    E[("validation_results<br/>One row per check, per run")]
-    F[("latest_validation_results<br/>View: latest run per method and test type")]
+    B[("Dev tables<br/>setup/01, setup/04, setup/05")]
+    C[("pk_registry<br/>Keys, setup/02")]
+    G[("freshness_registry<br/>Thresholds, setup/06")]
+    D1["validate_primary_keys<br/>Python / PySpark"]
+    D2["validate_primary_keys<br/>DQX"]
+    D3["validate_freshness<br/>Python / PySpark"]
+    E[("validation_results<br/>Shared historical results")]
+    F[("latest_validation_results<br/>Latest per method and test type")]
 
     A --> B
     B --> D1
-    C --> D1
     B --> D2
+    B --> D3
+    C --> D1
     C --> D2
+    G --> D3
     D1 --> E
     D2 --> E
+    D3 --> E
     E --> F
 
     classDef data fill:#eef0ff,stroke:#9298c8,color:#28335c
     classDef process fill:#e6f4ea,stroke:#5f9e6e,color:#1e3d27
     classDef view fill:#f3f3f7,stroke:#9298b7,color:#28335c,stroke-dasharray:4 2
 
-    class A,B,C,E data
-    class D1,D2 process
+    class A,B,C,G,E data
+    class D1,D2,D3 process
     class F view
 ```
 
 ## Example output
+
+### Primary key validation
 
 Sample results from validation runs. The `_dupes` and `_nulls` tables contain deliberately planted defects, and the ERROR row comes from the error handling test:
 
@@ -65,9 +78,24 @@ Sample results from validation runs. The `_dupes` and `_nulls` tables contain de
 
 Clean copies pass, while the defect tables fail with the exact number of planted duplicates and null keys. The invalid key column (`c_invalidkey`) was temporarily added to the registry for testing; the runner records the error in `error_message` and continues validating the remaining tables. Metrics are unavailable for checks that encounter an error.
 
+### Freshness validation
+
+The Python-native freshness runner uses Delta table history to identify the latest qualifying data-change operation and compares its age against the configured threshold.
+
+The following results demonstrate PASS and FAIL outcomes with a 24-hour threshold:
+
+| table_name | test_result | age_hours | max_age_hours |
+|---|---|---:|---:|
+| `validation_sweep.dev.customer` | FAIL | 192.21 | 24 |
+| `validation_sweep.dev.daily_orders` | PASS | 0.02 | 24 |
+
+The `daily_orders` table was refreshed through a controlled UPDATE, confirming that UPDATE operations are recognized as data changes. The older `customer` table exceeded its freshness threshold.
+
+A separate test using a nonexistent registered table confirmed ERROR handling without interrupting validation of other tables. All results are retained in the historical results table.
+
 ## Comparing approaches
 
-Both runners read the same registry and write to the same results table, so their latest results can be compared directly:
+Both primary key validation runners read the same registry and write to the same results table, so their latest results can be compared directly:
 
 | table_name | method | test_result | null_key_count | duplicate_count |
 |---|---|---|---|---|
@@ -85,20 +113,30 @@ Findings so far:
 
 ## Repository structure
 
-- `setup/`: notebooks that prepare test data, the key registry, the results table, and planted defects
-- `runners/python_native/`: custom Python validation runner
-- `runners/dqx/`: validation runner using Databricks Labs DQX
+- `setup/`: notebooks that prepare source tables, primary key and freshness registries, the shared results table, planted defects, and simulated table updates
+- `runners/python_native/`: custom Python/PySpark runners for primary key and freshness validation
+- `runners/dqx/`: primary key validation runner using Databricks Labs DQX
 - `exploration/`: data exploration, DQX exploration, example result queries, and error handling tests
 
 ## Running it
 
-Developed on Databricks Free Edition using the TPC-H sample data. Run the notebooks in this order:
+Developed on Databricks Free Edition using TPC-H sample data. Run the setup notebooks in this order:
 
 1. `setup/01_copy_source_tables`
 2. `setup/02_create_pk_registry`
 3. `setup/03_create_results_table`
 4. `setup/04_plant_pk_defects`
-5. `runners/python_native/validate_primary_keys`
-6. `runners/dqx/validate_primary_keys`
+5. `setup/05_simulate_table_updates`
+6. `setup/06_create_freshness_registry`
 
-Each runner can also be run on its own after the setup notebooks.
+Then run the validation notebooks:
+
+- `runners/python_native/validate_primary_keys`
+- `runners/dqx/validate_primary_keys`
+- `runners/python_native/validate_freshness`
+
+Each runner can be executed independently after setup.
+
+The freshness runner uses Delta table history to identify the latest qualifying data-change operation. Operations such as `OPTIMIZE` are excluded because they reorganize files without changing table data. A qualifying operation does not necessarily mean rows were modified, so freshness represents the age of the latest qualifying Delta operation rather than a guarantee of changed business data.
+
+The simulated updates notebook appends synthetic sample rows when rerun, so repeated execution may introduce duplicate order keys. The setup notebooks are intended for a demonstration environment; rerunning registry initialization may reset existing registrations.
