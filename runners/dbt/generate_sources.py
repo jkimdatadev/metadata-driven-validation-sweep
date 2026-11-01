@@ -1,11 +1,11 @@
-"""Generate dbt source definitions and key tests from the primary key registry.
+"""
+Generate dbt source definitions and key tests from the primary key registry.
 
-Reads active entries from validation_sweep.metadata.pk_registry and writes
-models/sources.yml, so dbt validates the same tables and keys as the other runners.
-Each registry entry gets two custom tests whose failure counts match the
-results table definitions: pk_null_rows (null_key_count) and pk_extra_rows
-(duplicate_count). Requires DATABRICKS_HOST, DATABRICKS_HTTP_PATH and
-DATABRICKS_TOKEN to be set.
+Reads active entries from validation_sweep.metadata.pk_registry and writes models/sources.yml, 
+so dbt validates the same tables and keys as the other runners.
+Each registry entry gets two custom tests whose failure counts match the results table definitions: 
+pk_null_rows (null_key_count) and pk_extra_rows (duplicate_count). 
+Requires DATABRICKS_HOST, DATABRICKS_HTTP_PATH and DATABRICKS_TOKEN to be set.
 """
 import os
 from pathlib import Path
