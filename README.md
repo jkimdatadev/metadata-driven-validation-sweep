@@ -22,7 +22,12 @@ Tech stack: Python, PySpark, SQL, Databricks, Delta Lake, Unity Catalog, Databri
 - [x] dbt connection setup and registry-driven primary key test generation
 - [x] Custom dbt null and duplicate tests
 - [x] dbt results loader and validation workflow wrapper
-- [ ] Verify and document end-to-end dbt execution and cross-method results
+- [x] Verified end-to-end dbt execution with results matching the Python and DQX runners
+- [ ] Schema coverage report showing which tables are registered for each check
+- [ ] Sequential benchmark of the three primary key methods
+- [ ] Lightweight CI with GitHub Actions
+- [ ] Scheduled runs with Databricks Jobs
+- [ ] Final documentation of tradeoffs and limitations
 
 ## How it works
 
@@ -31,25 +36,38 @@ Two metadata registries drive the validation framework. The primary key registry
 Adding a table or changing a freshness threshold requires updating registry metadata rather than modifying validation code.
 
 ```mermaid
-%%{init: {"flowchart": {"curve": "basis", "nodeSpacing": 24, "rankSpacing": 38}}}%%
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "edgeLabelBackground": "#ffffff",
+    "lineColor": "#9aa0a8",
+    "clusterBkg": "#fbfbfc",
+    "clusterBorder": "#c8ccd4",
+    "titleColor": "#4a5568",
+    "fontFamily": "Segoe UI, Helvetica, Arial, sans-serif"
+  },
+  "flowchart": {"curve": "basis", "nodeSpacing": 24, "rankSpacing": 50, "wrappingWidth": 300}
+}}%%
 flowchart TB
-    SOURCE[("TPC-H Sample Data<br/>samples.tpch_sf1")]
-    PREP["Prepare Validation Tables"]
-    TABLES[("Tables to Validate<br/>validation_sweep.dev")]
-
     subgraph CONFIG["Validation Configuration"]
         direction LR
         PK[("Primary Key Registry<br/>metadata.pk_registry")]
         FR[("Freshness Registry<br/>metadata.freshness_registry")]
     end
 
+    subgraph DATA["Data Preparation"]
+        direction TB
+        SOURCE[("TPC-H Sample Data<br/>samples.tpch_sf1")]
+        TABLES[("Tables to Validate<br/>validation_sweep.dev")]
+    end
+
     subgraph RUNNERS["Validation Execution"]
         direction TB
-        subgraph PK_RUNNERS["Primary Key Validation"]
+        subgraph PK_RUNNERS["Primary Key Validation (alternative methods)"]
             direction LR
             PY["Python / PySpark"]
             DQX["Databricks Labs DQX"]
-            DBT["dbt-databricks"]
+            DBT["dbt Core"]
         end
         FRESH["Freshness Validation<br/>Python / PySpark"]
     end
@@ -57,19 +75,18 @@ flowchart TB
     RESULTS[("Historical Results<br/>results.validation_results")]
     LATEST["Latest Results View<br/>results.latest_validation_results"]
 
-    SOURCE --> PREP --> TABLES
+    SOURCE -->|Prepare validation tables| TABLES
     TABLES --> RUNNERS
-    PK -.-> PK_RUNNERS
+    PK -.-> PY & DQX & DBT
     FR -.-> FRESH
-    RUNNERS --> RESULTS --> LATEST
+    RUNNERS -->|Write validation results| RESULTS --> LATEST
 
     classDef data fill:#eef0ff,stroke:#9298c8,color:#28335c
     classDef process fill:#e6f4ea,stroke:#5f9e6e,color:#1e3d27
     classDef view fill:#f3f3f7,stroke:#9298b7,color:#28335c,stroke-dasharray:4 2
     class SOURCE,TABLES,PK,FR,RESULTS data
-    class PREP,PY,DQX,DBT,FRESH process
+    class PY,DQX,DBT,FRESH process
     class LATEST view
-    style RUNNERS stroke:#357a47,stroke-width:3px
 ```
 
 
@@ -108,22 +125,27 @@ A separate test using a nonexistent registered table confirmed ERROR handling wi
 
 ## Comparing approaches
 
-The Python-native and DQX primary key runners read the same registry and write to the same results table. The dbt workflow uses that registry to generate tests and includes a loader for the shared results table. The following verified sample results compare the Python-native and DQX approaches:
+All three primary key runners read the same registry and write to the same results table, so their latest results can be compared directly:
 
 | table_name | method | test_result | null_key_count | duplicate_count |
 |---|---|---|---|---|
+| `validation_sweep.dev.customer_dupes` | dbt | FAIL | 0 | 5 |
 | `validation_sweep.dev.customer_dupes` | dqx | FAIL | 0 | 5 |
 | `validation_sweep.dev.customer_dupes` | python_native | FAIL | 0 | 5 |
+| `validation_sweep.dev.partsupp_nulls` | dbt | FAIL | 4 | 0 |
 | `validation_sweep.dev.partsupp_nulls` | dqx | FAIL | 4 | 0 |
 | `validation_sweep.dev.partsupp_nulls` | python_native | FAIL | 4 | 0 |
 
+The clean `customer` and `partsupp` tables pass with zero counts under all three methods.
+
 Findings so far:
 
-- Both approaches detect the same planted defects with identical counts.
+- All three approaches detect the same planted defects with identical counts.
 - DQX flags every row involved in a duplicate (10 rows for 5 duplicated keys), while the results table counts extra rows (5). The DQX runner converts its output so both methods report the same measure.
 - DQX's uniqueness check treats null keys as distinct, so a separate not-null check is needed, matching how the Python runner reports nulls separately from duplicates.
 - The Python runner computes all metrics in one aggregation, while the DQX runner applies its checks separately to attribute failures, which requires additional passes over each table.
-- The dbt approach generates tests from registry metadata rather than maintaining table-specific tests by hand. End-to-end comparison results will be added after verification.
+- dbt's built-in tests detect the same defects but measure them differently: `unique` counts duplicated key values rather than extra rows, `not_null` counts per column rather than per row, and `dbt_utils.unique_combination_of_columns` treats identical null keys as duplicates. On `partsupp_nulls`, it reported a duplicate that the other methods count only as null keys.
+- The dbt runner therefore uses two custom generic tests whose failure counts match the results table's definitions: `pk_null_rows` (rows with any null key column) and `pk_extra_rows` (extra rows sharing a non-null key). dbt tests count violations only, so `row_count` and `distinct_key_count` are null for dbt results.
 
 ## Repository structure
 
@@ -131,7 +153,7 @@ Findings so far:
 - `runners/python_native/`: custom Python/PySpark runners for primary key and freshness validation
 - `runners/dqx/`: primary key validation runner using Databricks Labs DQX
 - `runners/dbt/`: dbt project configuration, registry-driven test generation, custom null and duplicate tests, results loader, and `run_dbt_validation.py` workflow wrapper
-- `exploration/`: data exploration, DQX exploration, example result queries, and error handling tests
+- `exploration/`: data exploration, DQX exploration, table freshness exploration, example result queries, and error handling tests
 
 ## Running it
 
@@ -150,9 +172,26 @@ Then run the validation notebooks:
 - `runners/dqx/validate_primary_keys`
 - `runners/python_native/validate_freshness`
 
-The dbt implementation is under `runners/dbt/`. Its `run_dbt_validation.py` wrapper coordinates registry-driven test generation, dbt test execution, and loading test results into the central Delta table. It requires a configured dbt-databricks connection and the setup tables above. End-to-end execution and comparison results are being verified.
-
 The Python-native and DQX runners can be executed independently after setup.
+
+### dbt runner
+
+The dbt runner runs locally and connects to a Databricks SQL warehouse.
+
+1. Create a virtual environment and install the pinned versions:
+   ```
+   pip install -r runners/dbt/requirements.txt
+   ```
+2. Copy the profile from `runners/dbt/profiles.example.yml` into `~/.dbt/profiles.yml`.
+3. Set `DATABRICKS_HOST`, `DATABRICKS_HTTP_PATH` and `DATABRICKS_TOKEN` for your SQL warehouse.
+4. From `runners/dbt`, run:
+   ```
+   python run_dbt_validation.py
+   ```
+
+The wrapper generates tests from the registry, runs them, and loads the results into the central results table. Failing tests on the defect tables are expected and are recorded as FAIL results.
+
+### Notes
 
 The freshness runner uses Delta table history to identify the latest qualifying data-change operation. Operations such as `OPTIMIZE` are excluded because they reorganize files without changing table data. A qualifying operation does not necessarily mean rows were modified, so freshness represents the age of the latest qualifying Delta operation rather than a guarantee of changed business data.
 
