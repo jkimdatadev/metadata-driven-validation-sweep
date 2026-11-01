@@ -4,11 +4,9 @@ Status: In Progress
 
 Metadata-driven data validation framework that automates primary key and data freshness checks without per-table validation code. Configurable registries define the tables, key columns, and freshness thresholds to validate. Results from each run are stored in a central Delta table, with a view exposing the latest run for each validation method and test type.
 
-Primary key validation is implemented using custom Python/PySpark and Databricks Labs DQX runners. Freshness validation uses Delta table history to identify the latest qualifying data-change operation and compare its age against a configurable threshold.
+Primary key validation is implemented using custom Python/PySpark and Databricks Labs DQX runners. A third approach uses dbt tests generated from the same primary key registry, with a loader that writes dbt outcomes to the shared results table. Freshness validation uses Delta table history to identify the latest qualifying data-change operation and compare its age against a configurable threshold.
 
-A dbt-based primary key validation approach is planned.
-
-Tech stack: Python, PySpark, SQL, Databricks, Delta Lake, Unity Catalog, Databricks Labs DQX
+Tech stack: Python, PySpark, SQL, Databricks, Delta Lake, Unity Catalog, Databricks Labs DQX, dbt Core, dbt-databricks
 
 ## Progress
 
@@ -21,46 +19,61 @@ Tech stack: Python, PySpark, SQL, Databricks, Delta Lake, Unity Catalog, Databri
 - [x] Freshness registry with configurable thresholds
 - [x] Python-native freshness validation using Delta history
 - [x] Freshness PASS, FAIL, and ERROR testing
-- [ ] dbt primary key validation approach
+- [x] dbt connection setup and registry-driven primary key test generation
+- [x] Custom dbt null and duplicate tests
+- [x] dbt results loader and validation workflow wrapper
+- [ ] Verify and document end-to-end dbt execution and cross-method results
 
 ## How it works
 
-Two metadata registries drive the validation framework. The primary key registry defines tables and their key columns, while the freshness registry defines tables and maximum allowable data age. Each runner reads its corresponding registry and appends results to a shared Delta table. A view exposes the latest run for each validation method and test type.
+Two metadata registries drive the validation framework. The primary key registry defines tables and their key columns, while the freshness registry defines tables and maximum allowable data age. Python-native and DQX runners read the registry directly; the dbt workflow generates key tests from the primary key registry and loads their results into the same Delta table. A view exposes the latest run for each validation method and test type.
 
 Adding a table or changing a freshness threshold requires updating registry metadata rather than modifying validation code.
 
 ```mermaid
-flowchart TD
-    A[("samples.tpch_sf1<br/>Read-only source")]
-    B[("Dev tables<br/>setup/01, setup/04, setup/05")]
-    C[("pk_registry<br/>Keys, setup/02")]
-    G[("freshness_registry<br/>Thresholds, setup/06")]
-    D1["validate_primary_keys<br/>Python / PySpark"]
-    D2["validate_primary_keys<br/>DQX"]
-    D3["validate_freshness<br/>Python / PySpark"]
-    E[("validation_results<br/>Shared historical results")]
-    F[("latest_validation_results<br/>Latest per method and test type")]
+%%{init: {"flowchart": {"curve": "basis", "nodeSpacing": 24, "rankSpacing": 38}}}%%
+flowchart TB
+    SOURCE[("TPC-H Sample Data<br/>samples.tpch_sf1")]
+    PREP["Prepare Validation Tables"]
+    TABLES[("Tables to Validate<br/>validation_sweep.dev")]
 
-    A --> B
-    B --> D1
-    B --> D2
-    B --> D3
-    C --> D1
-    C --> D2
-    G --> D3
-    D1 --> E
-    D2 --> E
-    D3 --> E
-    E --> F
+    subgraph CONFIG["Validation Configuration"]
+        direction LR
+        PK[("Primary Key Registry<br/>metadata.pk_registry")]
+        FR[("Freshness Registry<br/>metadata.freshness_registry")]
+    end
+
+    subgraph RUNNERS["Validation Execution"]
+        direction TB
+        subgraph PK_RUNNERS["Primary Key Validation"]
+            direction LR
+            PY["Python / PySpark"]
+            DQX["Databricks Labs DQX"]
+            DBT["dbt-databricks"]
+        end
+        FRESH["Freshness Validation<br/>Python / PySpark"]
+    end
+
+    RESULTS[("Historical Results<br/>results.validation_results")]
+    LATEST["Latest Results View<br/>results.latest_validation_results"]
+
+    SOURCE --> PREP --> TABLES
+    TABLES --> RUNNERS
+    PK -.-> PK_RUNNERS
+    FR -.-> FRESH
+    RUNNERS --> RESULTS --> LATEST
 
     classDef data fill:#eef0ff,stroke:#9298c8,color:#28335c
     classDef process fill:#e6f4ea,stroke:#5f9e6e,color:#1e3d27
     classDef view fill:#f3f3f7,stroke:#9298b7,color:#28335c,stroke-dasharray:4 2
-
-    class A,B,C,G,E data
-    class D1,D2,D3 process
-    class F view
+    class SOURCE,TABLES,PK,FR,RESULTS data
+    class PREP,PY,DQX,DBT,FRESH process
+    class LATEST view
+    style RUNNERS stroke:#357a47,stroke-width:3px
 ```
+
+
+
 
 ## Example output
 
@@ -95,7 +108,7 @@ A separate test using a nonexistent registered table confirmed ERROR handling wi
 
 ## Comparing approaches
 
-Both primary key validation runners read the same registry and write to the same results table, so their latest results can be compared directly:
+The Python-native and DQX primary key runners read the same registry and write to the same results table. The dbt workflow uses that registry to generate tests and includes a loader for the shared results table. The following verified sample results compare the Python-native and DQX approaches:
 
 | table_name | method | test_result | null_key_count | duplicate_count |
 |---|---|---|---|---|
@@ -110,12 +123,14 @@ Findings so far:
 - DQX flags every row involved in a duplicate (10 rows for 5 duplicated keys), while the results table counts extra rows (5). The DQX runner converts its output so both methods report the same measure.
 - DQX's uniqueness check treats null keys as distinct, so a separate not-null check is needed, matching how the Python runner reports nulls separately from duplicates.
 - The Python runner computes all metrics in one aggregation, while the DQX runner applies its checks separately to attribute failures, which requires additional passes over each table.
+- The dbt approach generates tests from registry metadata rather than maintaining table-specific tests by hand. End-to-end comparison results will be added after verification.
 
 ## Repository structure
 
 - `setup/`: notebooks that prepare source tables, primary key and freshness registries, the shared results table, planted defects, and simulated table updates
 - `runners/python_native/`: custom Python/PySpark runners for primary key and freshness validation
 - `runners/dqx/`: primary key validation runner using Databricks Labs DQX
+- `runners/dbt/`: dbt project configuration, registry-driven test generation, custom null and duplicate tests, results loader, and `run_dbt_validation.py` workflow wrapper
 - `exploration/`: data exploration, DQX exploration, example result queries, and error handling tests
 
 ## Running it
@@ -135,7 +150,9 @@ Then run the validation notebooks:
 - `runners/dqx/validate_primary_keys`
 - `runners/python_native/validate_freshness`
 
-Each runner can be executed independently after setup.
+The dbt implementation is under `runners/dbt/`. Its `run_dbt_validation.py` wrapper coordinates registry-driven test generation, dbt test execution, and loading test results into the central Delta table. It requires a configured dbt-databricks connection and the setup tables above. End-to-end execution and comparison results are being verified.
+
+The Python-native and DQX runners can be executed independently after setup.
 
 The freshness runner uses Delta table history to identify the latest qualifying data-change operation. Operations such as `OPTIMIZE` are excluded because they reorganize files without changing table data. A qualifying operation does not necessarily mean rows were modified, so freshness represents the age of the latest qualifying Delta operation rather than a guarantee of changed business data.
 
