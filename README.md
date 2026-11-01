@@ -35,59 +35,7 @@ Two metadata registries drive the validation framework. The primary key registry
 
 Adding a table or changing a freshness threshold requires updating registry metadata rather than modifying validation code.
 
-```mermaid
-%%{init: {
-  "theme": "base",
-  "themeVariables": {
-    "edgeLabelBackground": "#ffffff",
-    "lineColor": "#9aa0a8",
-    "clusterBkg": "#fbfbfc",
-    "clusterBorder": "#c8ccd4",
-    "titleColor": "#4a5568",
-    "fontFamily": "Segoe UI, Helvetica, Arial, sans-serif"
-  },
-  "flowchart": {"curve": "basis", "nodeSpacing": 24, "rankSpacing": 50, "wrappingWidth": 300}
-}}%%
-flowchart TB
-    subgraph CONFIG["Validation Configuration"]
-        direction LR
-        PK[("Primary Key Registry<br/>metadata.pk_registry")]
-        FR[("Freshness Registry<br/>metadata.freshness_registry")]
-    end
-
-    subgraph DATA["Data Preparation"]
-        direction TB
-        SOURCE[("TPC-H Sample Data<br/>samples.tpch_sf1")]
-        TABLES[("Tables to Validate<br/>validation_sweep.dev")]
-    end
-
-    subgraph RUNNERS["Validation Execution"]
-        direction TB
-        subgraph PK_RUNNERS["Primary Key Validation (alternative methods)"]
-            direction LR
-            PY["Python / PySpark"]
-            DQX["Databricks Labs DQX"]
-            DBT["dbt Core"]
-        end
-        FRESH["Freshness Validation<br/>Python / PySpark"]
-    end
-
-    RESULTS[("Historical Results<br/>results.validation_results")]
-    LATEST["Latest Results View<br/>results.latest_validation_results"]
-
-    SOURCE -->|Prepare validation tables| TABLES
-    TABLES --> RUNNERS
-    PK -.-> PY & DQX & DBT
-    FR -.-> FRESH
-    RUNNERS -->|Write validation results| RESULTS --> LATEST
-
-    classDef data fill:#eef0ff,stroke:#9298c8,color:#28335c
-    classDef process fill:#e6f4ea,stroke:#5f9e6e,color:#1e3d27
-    classDef view fill:#f3f3f7,stroke:#9298b7,color:#28335c,stroke-dasharray:4 2
-    class SOURCE,TABLES,PK,FR,RESULTS data
-    class PY,DQX,DBT,FRESH process
-    class LATEST view
-```
+![Architecture diagram: data preparation and metadata registries feed the Python, DQX and dbt primary key runners and the freshness runner, which write to a central results table and a latest-results view](docs/images/architecture.drawio.svg)
 
 
 
